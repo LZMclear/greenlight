@@ -1,10 +1,14 @@
 package main
 
 import (
+	"Greenlight/internal/data"
+	"Greenlight/internal/validator"
+	"errors"
 	"fmt"
 	"golang.org/x/time/rate"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -81,5 +85,43 @@ func (app *application) rateLimit(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		}
 
+	})
+}
+
+func (app *application) authenticate(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		//在响应头中添加"Vary: Authorization" 这向任何缓存表明，响应会根据请求中的Authentication头的值变化
+		w.Header().Set("Vary", "Authorization")
+		authenticationHeader := r.Header.Get("Authorization")
+		if authenticationHeader == "" {
+			r = app.contextSetUser(r, data.AnonymousUser)
+			next.ServeHTTP(w, r)
+			return
+		}
+		headerPart := strings.Split(authenticationHeader, " ")
+		if len(headerPart) != 2 || headerPart[0] != "Bearer" {
+			app.invalidAuthenticationTokenResponse(w, r)
+			return
+		}
+		token := headerPart[1]
+		v := validator.New()
+		data.ValidateTokenPlainText(v, token)
+		if !v.Valid() {
+			app.invalidAuthenticationTokenResponse(w, r)
+			return
+		}
+		user, err := app.models.Users.GetForToken(data.ScopeAuthentication, token)
+		if err != nil {
+			switch {
+			case errors.Is(err, data.ErrRecordNotFound):
+				app.invalidAuthenticationTokenResponse(w, r)
+			default:
+				app.serverErrorResponse(w, r, err)
+			}
+			return
+		}
+		//将提取的用户存储在上下文中
+		request := app.contextSetUser(r, user)
+		next.ServeHTTP(w, request)
 	})
 }

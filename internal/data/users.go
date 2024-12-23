@@ -30,6 +30,9 @@ var (
 	ErrDuplicateEmail = errors.New("duplicate email")
 )
 
+// AnonymousUser 声明一个匿名用户
+var AnonymousUser = &User{}
+
 type UserModelInterface interface {
 	Insert(user *User) error
 	GetByEmail(email string) (*User, error)
@@ -174,4 +177,9 @@ func (m *UserModel) GetForToken(scopeActivation, tokenPlaintext string) (*User, 
 		}
 	}
 	return &user, nil
+}
+
+// IsAnonymousUser 检查用户实例是否是匿名用户
+func (u *User) IsAnonymousUser() bool {
+	return u == AnonymousUser
 }
