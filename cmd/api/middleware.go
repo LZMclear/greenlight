@@ -88,11 +88,13 @@ func (app *application) rateLimit(next http.Handler) http.Handler {
 	})
 }
 
+// 根据请求的token将对应用户信息存入上下文，没有
 func (app *application) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		//在响应头中添加"Vary: Authorization" 这向任何缓存表明，响应会根据请求中的Authentication头的值变化
 		w.Header().Set("Vary", "Authorization")
 		authenticationHeader := r.Header.Get("Authorization")
+		//如果没有token，在上下文中设置空的匿名结构体
 		if authenticationHeader == "" {
 			r = app.contextSetUser(r, data.AnonymousUser)
 			next.ServeHTTP(w, r)
@@ -110,6 +112,7 @@ func (app *application) authenticate(next http.Handler) http.Handler {
 			app.invalidAuthenticationTokenResponse(w, r)
 			return
 		}
+		//
 		user, err := app.models.Users.GetForToken(data.ScopeAuthentication, token)
 		if err != nil {
 			switch {
@@ -124,4 +127,51 @@ func (app *application) authenticate(next http.Handler) http.Handler {
 		request := app.contextSetUser(r, user)
 		next.ServeHTTP(w, request)
 	})
+}
+
+// 检查用户是否是匿名用户
+func (app *application) requireAuthenticationUser(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		user := app.contextGetUser(r)
+		//如果是匿名用户，提醒他们进行身份验证
+		if user.IsAnonymousUser() {
+			app.authenticationRequiredResponse(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	}
+}
+
+// 对用户身份的状态进行验证，查看是否激活
+func (app *application) requireActivateUser(next http.HandlerFunc) http.HandlerFunc {
+	fn := func(w http.ResponseWriter, r *http.Request) {
+		user := app.contextGetUser(r)
+		//如果是实体用户，但是没有激活，提醒用户需要激活
+		if !user.Activated {
+			app.inactivateAccountResponse(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	}
+	//中间件执行顺序，先执行requireAuthenticationUser,在执行requireActivateUser，先知道User是谁，在查看是否激活
+	return app.requireAuthenticationUser(fn)
+}
+func (app *application) requirePermission(code string, next http.HandlerFunc) http.HandlerFunc {
+	fn := func(w http.ResponseWriter, r *http.Request) {
+		user := app.contextGetUser(r)
+
+		//根据userID获取该user的权限
+		permissions, err := app.models.Permissions.GetAllForUser(user.ID)
+		if err != nil {
+			app.serverErrorResponse(w, r, err)
+			return
+		}
+		include := permissions.Include(code)
+		if !include {
+			app.notPermittedResponse(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	}
+	return app.requireActivateUser(fn)
 }

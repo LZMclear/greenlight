@@ -46,13 +46,19 @@ func (app *application) registerUserHandler(w http.ResponseWriter, r *http.Reque
 		}
 		return
 	}
+	// Add the "movies:read" permission for the new user.
+	err = app.models.Permissions.AddForUser(user.ID, "movies:read")
+	if err != nil {
+		app.serverErrorResponse(w, r, err)
+		return
+	}
 	//5. 成功插入数据后，生成一个激活令牌
 	token, err := app.models.Tokens.New(user.ID, 3*24*time.Hour, data.ScopeActivation)
 	if err != nil {
 		app.serverErrorResponse(w, r, err)
 		return
 	}
-	//5. 开启一个线程用于发送欢迎邮件，不会影响主程序的正常运行，减少响应的延迟。
+	//6. 开启一个线程用于发送欢迎邮件，不会影响主程序的正常运行，减少响应的延迟。
 	//  在这种后台线程中发生是的任何panic都不会被recoverPanic中间件或者http.Server恢复，
 	app.background(func() {
 		data := map[string]interface{}{

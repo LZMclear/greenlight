@@ -14,15 +14,17 @@ var (
 
 // Models 将会在里面添加其他的模型结构体，例如，UserModels, PermissionModels
 type Models struct {
-	Movies MovieModelInterface
-	Users  UserModelInterface
-	Tokens TokenModelInterface
+	Movies      MovieModelInterface
+	Users       UserModelInterface
+	Tokens      TokenModelInterface
+	Permissions PermissionModelInterface
 }
 
 func NewModels(db *sql.DB) Models {
 	return Models{
-		Movies: &MovieModel{db},
-		Users:  &UserModel{db},
-		Tokens: &TokenModel{DB: db},
+		Movies:      &MovieModel{db},
+		Users:       &UserModel{db},
+		Tokens:      &TokenModel{DB: db},
+		Permissions: &PermissionModel{db},
 	}
 }
