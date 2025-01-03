@@ -1,6 +1,7 @@
 package main
 
 import (
+	"expvar"
 	"github.com/julienschmidt/httprouter"
 	"github.com/justinas/alice"
 	"net/http"
@@ -31,8 +32,13 @@ func (app *application) routes() http.Handler {
 	//User
 	router.HandlerFunc(http.MethodPost, "/v1/users", app.registerUserHandler)
 	router.HandlerFunc(http.MethodPut, "/v1/users/activated", app.activateUserHandler)
+	router.HandlerFunc(http.MethodPut, "/v1/users/password", app.updateUserPasswordHandler)
+	//Token
 	router.HandlerFunc(http.MethodPost, "/v1/tokens/authentication", app.createAuthenticationTokenHandler)
+	router.HandlerFunc(http.MethodPost, "/v1/tokens/activation", app.createActivateTokenHandler)
+	router.HandlerFunc(http.MethodPost, "/v1/tokens/password-reset", app.createPasswordResetTokenHandler)
 
-	chain := alice.New(app.recoverPanic, app.rateLimit, app.authenticate)
+	router.Handler(http.MethodGet, "/debug/vars", expvar.Handler())
+	chain := alice.New(app.metrics, app.recoverPanic, app.enableCORS, app.rateLimit, app.authenticate)
 	return chain.Then(router)
 }

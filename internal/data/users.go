@@ -38,6 +38,7 @@ type UserModelInterface interface {
 	GetByEmail(email string) (*User, error)
 	Update(user *User) error
 	GetForToken(scopeActivation, tokenPlaintext string) (*User, error)
+	Get(id int64) (*User, error)
 }
 
 type UserModel struct {
@@ -182,4 +183,22 @@ func (m *UserModel) GetForToken(scopeActivation, tokenPlaintext string) (*User, 
 // IsAnonymousUser 检查用户实例是否是匿名用户
 func (u *User) IsAnonymousUser() bool {
 	return u == AnonymousUser
+}
+
+// Get 根据ID获取用户数据
+func (m *UserModel) Get(id int64) (*User, error) {
+	query := "select * from users where id = ?"
+	ctx, cancelFunc := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancelFunc()
+	var user User
+	err := m.DB.QueryRowContext(ctx, query, id).Scan(&user.ID, &user.CreatedAt, &user.Username, &user.PasswordHash.hash, &user.Activated, &user.Version, &user.Email)
+	if err != nil {
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			return nil, ErrRecordNotFound
+		default:
+			return nil, err
+		}
+	}
+	return &user, nil
 }

@@ -6,9 +6,12 @@ import (
 	"Greenlight/internal/mailer"
 	"context"
 	"database/sql"
+	"expvar"
 	"flag"
 	_ "github.com/go-sql-driver/mysql"
 	"os"
+	"runtime"
+	"strings"
 	"sync"
 	"time"
 )
@@ -35,6 +38,12 @@ type config struct { //保存所有配置设置
 		username string
 		password string
 		sender   string
+	}
+	cors struct {
+		trustedOrigins []string
+	}
+	jwt struct {
+		secret string
 	}
 }
 
@@ -71,6 +80,15 @@ func main() {
 	flag.StringVar(&cfg.smtp.password, "smtp-password", "***", "SMTP password")
 	flag.StringVar(&cfg.smtp.sender, "smtp-sender", "Greenlight <no-reply@greenlight.alexedwards.net>", "SMTP sender")
 
+	//使用flag.Func处理命令行参数 trusted cors origins 受信任的源列表，使用func对列表中的数据进行处理：分割
+	flag.Func("cors-trusted-origins", "Trusted CORS Origins", func(s string) error {
+		cfg.cors.trustedOrigins = strings.Split(s, " ")
+		return nil
+	})
+
+	//jwt签名密钥
+	flag.StringVar(&cfg.jwt.secret, "jwt-secret", "pei3einoh0Beem6uM6Ungohn2heiv5lah1ael4joopie5JaigeikoozaoTew2Eh6", "jwt secret")
+
 	flag.Parse()
 	//声明一个依赖项的实例
 	logger := jsonlog.New(os.Stdout, jsonlog.LevelInfo)
@@ -80,6 +98,21 @@ func main() {
 	}
 	defer db.Close()
 	logger.PrintInfo("database connect pool established", nil)
+
+	//公开一个version变量
+	expvar.NewString("version").Set(version)
+	//公开线程的数量
+	expvar.Publish("goroutines", expvar.Func(func() any {
+		return runtime.NumGoroutine()
+	}))
+	//公开数据库连接池的统计信息
+	expvar.Publish("database", expvar.Func(func() any {
+		return db.Stats()
+	}))
+	//公开当前Unix时间戳
+	expvar.Publish("timestamp", expvar.Func(func() any {
+		return time.Now().Unix()
+	}))
 	app := &application{
 		config: cfg,
 		logger: logger,

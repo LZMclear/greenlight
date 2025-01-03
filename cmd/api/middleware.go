@@ -4,10 +4,14 @@ import (
 	"Greenlight/internal/data"
 	"Greenlight/internal/validator"
 	"errors"
+	"expvar"
 	"fmt"
+	"github.com/felixge/httpsnoop"
+	"github.com/pascaldekloe/jwt"
 	"golang.org/x/time/rate"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -82,9 +86,9 @@ func (app *application) rateLimit(next http.Handler) http.Handler {
 				return
 			}
 			mu.Unlock()
-			next.ServeHTTP(w, r)
-		}
 
+		}
+		next.ServeHTTP(w, r)
 	})
 }
 
@@ -126,6 +130,63 @@ func (app *application) authenticate(next http.Handler) http.Handler {
 		//将提取的用户存储在上下文中
 		request := app.contextSetUser(r, user)
 		next.ServeHTTP(w, request)
+	})
+}
+
+func (app *application) authenticationByJWT(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		//目的是告诉缓存系统(CDN、反向代理、浏览器缓存)在缓存资源时需要考虑Authorization头部
+		//对于相同的URL，如果请求的Authorization头不同，应该视为不同的资源，进行分开存储
+		w.Header().Set("Vary", "Authorization")
+		authorizationHeader := r.Header.Get("Authorization")
+		if authorizationHeader == "" {
+			app.contextSetUser(r, data.AnonymousUser)
+			next.ServeHTTP(w, r)
+			return
+		}
+		split := strings.Split(authorizationHeader, " ")
+		if len(split) != 2 || split[0] != "Bearer" {
+			app.invalidAuthenticationTokenResponse(w, r)
+			return
+		}
+		token := split[1]
+		//解析提取声明  如果JWT内容和签名不匹配将会返回错误
+		claims, err := jwt.HMACCheck([]byte(token), []byte(app.config.jwt.secret))
+		if err != nil {
+			app.invalidAuthenticationTokenResponse(w, r)
+			return
+		}
+		if !claims.Valid(time.Now()) { //检查token是否过期
+			app.invalidAuthenticationTokenResponse(w, r)
+			return
+		}
+		if claims.Issuer != "greenlight.alexedwards.net" { //检查发行人是否是我们的应用
+			app.invalidAuthenticationTokenResponse(w, r)
+			return
+		}
+		if !claims.AcceptAudience("greenlight.alexedwards.net") { //检查我们的应用是否是JWT期望的受众
+			app.invalidAuthenticationTokenResponse(w, r)
+			return
+		}
+		//检查完毕，jwt是我们期望的jwt
+		parseInt, err := strconv.ParseInt(claims.Subject, 10, 64)
+		if err != nil {
+			app.serverErrorResponse(w, r, err)
+			return
+		}
+		//根据id查询用户
+		user, err := app.models.Users.Get(parseInt)
+		if err != nil {
+			switch {
+			case errors.Is(err, data.ErrRecordNotFound):
+				app.invalidAuthenticationTokenResponse(w, r)
+			default:
+				app.serverErrorResponse(w, r, err)
+			}
+			return
+		}
+		r = app.contextSetUser(r, user)
+		next.ServeHTTP(w, r)
 	})
 }
 
@@ -174,4 +235,52 @@ func (app *application) requirePermission(code string, next http.HandlerFunc) ht
 		next.ServeHTTP(w, r)
 	}
 	return app.requireActivateUser(fn)
+}
+
+// Access-Control-Allow-Origin用于像浏览器指示可以与不同源共享响应
+func (app *application) enableCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		/*
+			响应将根据请求来源而有所不同，具体的，响应中的Access-Control-Allow-Origin头的值可能不同
+			因此，我们应该确保始终设置一个Vary: Origin响应头，以警告任何缓存响应可能不同。否则https://textslashplain.com/2018/08/02/cors-and-vary/
+		*/
+		//添加一个"Vary Origin" header
+		w.Header().Set("Vary", "Origin")
+		w.Header().Set("Vary", "Access-Control-Request-Method")
+		origin := r.Header.Get("Origin")
+		//请求头中含有源并且至少配置了一个信任的源时运行
+		if origin != "" && len(app.config.cors.trustedOrigins) != 0 {
+			//遍历查看是否是信任的源
+			for i := range app.config.cors.trustedOrigins {
+				if origin == app.config.cors.trustedOrigins[i] {
+					w.Header().Set("Access-Control-Allow-Origin", origin)
+					//检查请求是否含有HTTP方法OPTIONS和包括Access-Control-Request-Method头，如果是，将他视为preflight请求
+					if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
+						// Set the necessary preflight response headers, as discussed previously.
+						w.Header().Set("Access-Control-Allow-Methods", "OPTIONS, PUT, PATCH, DELETE")
+						w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+						// Write the headers along with a 200 OK status and return from the middleware with no further action.
+						w.WriteHeader(http.StatusOK)
+						return
+					}
+				}
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (app *application) metrics(next http.Handler) http.Handler {
+	//初始化新的expvar变量当中间件链首次被创建
+	totalRequestReceived := expvar.NewInt("total_requests_received")
+	totalResponseSent := expvar.NewInt("total_response_sent")
+	totalProcessTimeMicrosecond := expvar.NewInt("total_process_time_microsecond")
+	totalResponseSentByStatus := expvar.NewMap("total_responses_sent_by_status")
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		totalRequestReceived.Add(1)
+		metrics := httpsnoop.CaptureMetrics(next, w, r)
+		totalResponseSent.Add(1)
+		totalProcessTimeMicrosecond.Add(metrics.Duration.Microseconds())
+		totalResponseSentByStatus.Add(strconv.Itoa(metrics.Code), 1)
+	})
 }
